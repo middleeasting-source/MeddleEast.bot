@@ -1,123 +1,247 @@
 import os
 import re
-from telethon import TelegramClient, events
-from telethon.sessions import StringSession
-from flask import Flask
+import asyncio
+import logging
 from threading import Thread
 
-# Render সার্ভারের জন্য ছোট ওয়েব সার্ভার (পোর্ট ৮০৮০)
-app = Flask('')
+from flask import Flask
+from telethon import TelegramClient, events
+from telethon.sessions import StringSession
 
-@app.route('/')
+
+# =====================================
+# LOGGING: Render Logs-এ সমস্যা দেখাবে
+# =====================================
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s"
+)
+
+logger = logging.getLogger(__name__)
+
+
+# =====================================
+# RENDER WEB SERVER
+# =====================================
+
+app = Flask(__name__)
+
+
+@app.route("/")
 def home():
-    return "Bot is running 24/7!"
+    return "Telegram News Bot is running!"
 
-def run():
-    app.run(host='0.0.0.0', port=8080)
+
+def run_web_server():
+    port = int(os.environ.get("PORT", "10000"))
+    app.run(host="0.0.0.0", port=port)
+
 
 def keep_alive():
-    t = Thread(target=run)
-    t.start()
+    thread = Thread(target=run_web_server, daemon=True)
+    thread.start()
 
-# ==========================================
-# ⚙️ কনফিগারেশন (আপনার সঠিক API বসানো হয়েছে)
-# ==========================================
-api_id = 37007922                                  
-api_hash = '06daa70876742419f268ffaadc42a251'    
-string_session = os.environ.get('SESSION_STRING', '') # Render Environment Variable
 
-# যে চ্যানেলগুলো থেকে নিউজ সংগ্রহ করা হবে
-source_channels = [
-    '@QudsNen',
-    '@Irna_en',
-    '@rtnews',
-    '@MFARussia',
-    '@CIG_telegram',
-    '@ClashReport',
-    '@infodefENGLAND',
-    '@Middle_East_Spectator',
-    '@Slavyangrad',
-    '@geopolitics_prime',
-    '@DDGeopolitics',
-    '@Intelslava'
+# =====================================
+# TELEGRAM CONFIGURATION
+# Render Environment Variables থেকে নেবে
+# =====================================
+
+API_ID =37007922 int(os.environ.get("API_ID", "0"))
+API_HASH = os.environ.get("API_HASH", "")
+SESSION_STRING = os.environ.get("SESSION_STRING", "")
+
+MY_CHANNEL = os.environ.get("MY_CHANNEL", "@MiddleEastin")
+
+SOURCE_CHANNELS = [
+    "@QudsNen",
+    "@Irna_en",
+    "@rtnews",
+    "@MFARussia",
+    "@CIG_telegram",
+    "@ClashReport",
+    "@infodefENGLAND",
+    "@Middle_East_Spectator",
+    "@Slavyangrad",
+    "@geopolitics_prime",
+    "@DDGeopolitics",
+    "@Intelslava",
 ]
 
-# আপনার নিজস্ব চ্যানেল যেখানে নিউজ পোস্ট হবে
-my_channel = '@MiddleEastin'
+CHANNEL_CREDIT = "\n\nFollow: @MiddleEastin"
 
-# চ্যানেল ক্রেডিট
-channel_credit = "\n\nFollow me: @MiddleEastin"
-# ==========================================
 
-# ডুপ্লিকেট নিউজ আটকানোর জন্য ট্র্যাক সেট
-processed_ids = set()
+# =====================================
+# CHECK REQUIRED SETTINGS
+# =====================================
 
-# StringSession ব্যবহার করে ক্লায়েন্ট ইনিশিয়ালাইজেশন
-client = TelegramClient(StringSession(string_session), api_id, api_hash, system_version='4.16.3-vx')
+if not API_ID or not API_HASH or not SESSION_STRING:
+    raise RuntimeError(
+        "Missing API_ID, API_HASH, or SESSION_STRING "
+        "in Render Environment Variables."
+    )
+
+
+# =====================================
+# TELEGRAM CLIENT
+# =====================================
+
+client = TelegramClient(
+    StringSession(SESSION_STRING),
+    API_ID,
+    API_HASH,
+    connection_retries=None,
+    retry_delay=5,
+    auto_reconnect=True,
+)
+
+
+# =====================================
+# AUTOMATIC HASHTAGS
+# =====================================
 
 def generate_hashtags(text):
-    """নিউজের বিষয়বস্তু বা কিওয়ার্ড চেক করে স্বয়ংক্রিয়ভাবে প্রাসঙ্গিক হ্যাশট্যাগ তৈরি করবে"""
     text_lower = text.lower()
-    tags = ["#Breaking", "#MiddleEast", "#News"]
-    
-    if any(keyword in text_lower for keyword in ['gaza', 'palestine', 'hamas', 'israel', 'idf', 'tel aviv']):
+
+    tags = ["#Breaking", "#News"]
+
+    if any(word in text_lower for word in [
+        "gaza", "palestine", "hamas", "israel",
+        "idf", "tel aviv"
+    ]):
         tags.extend(["#Gaza", "#Palestine", "#Israel"])
-    elif any(keyword in text_lower for keyword in ['russia', 'ukraine', 'moscow', 'kyiv', 'putin', 'zelensky']):
-        tags.extend(["#Russia", "#Ukraine", "#Conflict"])
-    elif any(keyword in text_lower for keyword in ['iran', 'tehran', 'syria', 'lebanon', 'hezbollah', 'yemen', 'houthi']):
-        tags.extend(["#Iran", "#Geopolitics", "#MiddleEastCrisis"])
-    elif any(keyword in text_lower for keyword in ['oil', 'economy', 'market', 'dollar', 'trade']):
+
+    elif any(word in text_lower for word in [
+        "russia", "ukraine", "moscow",
+        "kyiv", "putin", "zelensky"
+    ]):
+        tags.extend(["#Russia", "#Ukraine", "#WorldNews"])
+
+    elif any(word in text_lower for word in [
+        "iran", "tehran", "syria", "lebanon",
+        "hezbollah", "yemen", "houthi"
+    ]):
+        tags.extend(["#Iran", "#MiddleEast", "#Geopolitics"])
+
+    elif any(word in text_lower for word in [
+        "oil", "economy", "market", "dollar", "trade"
+    ]):
         tags.extend(["#Economy", "#GlobalNews"])
+
     else:
-        tags.append("#WorldNews")
-        
-    return " " + " ".join(tags)
+        tags.extend(["#WorldNews", "#InternationalNews"])
 
-@client.on(events.NewMessage(chats=source_channels))
-async def handler(event):
+    return " ".join(dict.fromkeys(tags))
+
+
+# =====================================
+# CLEAN NEWS TEXT
+# =====================================
+
+def clean_news_text(text):
+    if not text:
+        return ""
+
+    # সরাসরি লিংক ও প্রচলিত সোর্স ক্রেডিট বাদ দেওয়া
+    text = re.sub(r"https?://\S+|www\.\S+", "", text, flags=re.I)
+    text = re.sub(r"t\.me/\S+", "", text, flags=re.I)
+    text = re.sub(
+        r"(?im)^\s*(source|via|credit)\s*:.*$",
+        "",
+        text
+    )
+
+    # অতিরিক্ত ফাঁকা লাইন পরিষ্কার
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+
+    return text.strip()
+
+
+# =====================================
+# FORWARD NEW POSTS TO YOUR CHANNEL
+# =====================================
+
+@client.on(events.NewMessage(chats=SOURCE_CHANNELS))
+async def handle_new_post(event):
     try:
-        # একই নিউজ বারবার আসা রোধ করতে মেসেজ আইডি চেক করা
-        message_unique_key = (event.chat_id, event.id)
-        if message_unique_key in processed_ids:
+        original_text = event.raw_text or ""
+        clean_text = clean_news_text(original_text)
+
+        hashtags = generate_hashtags(clean_text)
+
+        # Media caption-এর সীমা মাথায় রেখে লেখা ছোট রাখা
+        if event.message.media:
+            clean_text = clean_text[:650]
+        else:
+            clean_text = clean_text[:3500]
+
+        parts = []
+
+        if clean_text:
+            parts.append(clean_text)
+
+        if hashtags:
+            parts.append(hashtags)
+
+        parts.append(CHANNEL_CREDIT.strip())
+
+        final_caption = "\n\n".join(parts)
+
+        if event.message.media:
+            await client.send_file(
+                MY_CHANNEL,
+                event.message.media,
+                caption=final_caption[:1000]
+            )
+
+        elif clean_text:
+            await client.send_message(
+                MY_CHANNEL,
+                final_caption[:4000],
+                link_preview=False
+            )
+
+        else:
+            logger.info(
+                "Empty text post skipped. Source chat ID: %s",
+                event.chat_id
+            )
             return
-        
-        # মেমরি লিমিটেডের মধ্যে রাখতে সেট সাইজ নিয়ন্ত্রণ
-        if len(processed_ids) > 2000:
-            processed_ids.clear()
-            
-        processed_ids.add(message_unique_key)
 
-        if event.raw_text:
-            text = event.raw_text
-            
-            # ১. সমস্ত লিংক, চ্যানেলের ইউজারনেম এবং সোর্স/ক্রেডিট মুছে ফেলা
-            clean_text = re.sub(
-                r'http\S+|www\S+|@\w+|t\.me\/\S+|Source:.*|Via:.*|Credit:.*|频道:.*|Telegram:.*', 
-                '', 
-                text, 
-                flags=re.IGNORECASE
-            ).strip()[:850]
-            
-            if not clean_text and not event.media:
-                return
+        logger.info(
+            "Post sent successfully. Source chat ID: %s, message ID: %s",
+            event.chat_id,
+            event.id
+        )
 
-            # ২. ডায়নামিক হ্যাশট্যাগ জেনারেট করা
-            dynamic_hashtags = generate_hashtags(clean_text)
+    except Exception:
+        logger.exception(
+            "Failed to process post. Chat ID: %s, message ID: %s",
+            event.chat_id,
+            event.id
+        )
 
-            # ৩. ফাইনাল ক্যাপশন তৈরি
-            final_caption = clean_text + "\n" + dynamic_hashtags + channel_credit if clean_text else channel_credit.strip()
-            
-            # ৪. পোস্ট পাঠানো
-            if event.media and not getattr(event.media, 'webpage', None):
-                await client.send_file(my_channel, event.media, caption=final_caption)
-            else:
-                await client.send_message(my_channel, final_caption)
-                
-    except Exception as e:
-        print(f"Error: {e}")
+
+# =====================================
+# START BOT
+# =====================================
+
+async def main():
+    keep_alive()
+
+    logger.info("Telegram News Bot starting...")
+
+    await client.start()
+
+    me = await client.get_me()
+    logger.info("Telegram account connected successfully: %s", me.id)
+    logger.info("Destination channel: %s", MY_CHANNEL)
+    logger.info("Listening to %s source channels.", len(SOURCE_CHANNELS))
+
+    await client.run_until_disconnected()
+
 
 if __name__ == "__main__":
-    keep_alive()
-    print("বট ক্লাউডে চালু হচ্ছে...")
-    client.start()
-    client.run_until_disconnected()
+    asyncio.run(main())
