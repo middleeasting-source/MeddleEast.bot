@@ -48,7 +48,7 @@ def keep_alive():
 # Render Environment Variables থেকে নেবে
 # =====================================
 
-API_ID =37007922 int(os.environ.get("API_ID", "0"))
+API_ID = int(os.environ.get("API_ID", "0"))
 API_HASH = os.environ.get("API_HASH", "")
 SESSION_STRING = os.environ.get("SESSION_STRING", "")
 
