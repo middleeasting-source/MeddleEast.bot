@@ -5,7 +5,7 @@ from telethon.sessions import StringSession
 from flask import Flask
 from threading import Thread
 
-# Koyeb বা Render সার্ভারের জন্য ছোট ওয়েব সার্ভার (পোর্ট ৮০৮০)
+# Render সার্ভারের জন্য ছোট ওয়েব সার্ভার (পোর্ট ৮০৮০)
 app = Flask('')
 
 @app.route('/')
@@ -20,11 +20,11 @@ def keep_alive():
     t.start()
 
 # ==========================================
-# ⚙️ কনফিগারেশন (আপনার প্রয়োজন অনুযায়ী পরিবর্তন করুন)
+# ⚙️ কনফিগারেশন (আপনার সঠিক API বসানো হয়েছে)
 # ==========================================
 api_id = 37007922                                  
 api_hash = '06daa70876742419f268ffaadc42a251'    
-string_session = os.environ.get('SESSION_STRING', '') # রেন্ডার/কোয়েব এনভায়রনমেন্ট ভ্যারিয়েবল
+string_session = os.environ.get('SESSION_STRING', '') # Render Environment Variable
 
 # যে চ্যানেলগুলো থেকে নিউজ সংগ্রহ করা হবে
 source_channels = [
@@ -45,7 +45,7 @@ source_channels = [
 # আপনার নিজস্ব চ্যানেল যেখানে নিউজ পোস্ট হবে
 my_channel = '@MiddleEastin'
 
-# আপনার আগের চ্যানেল ক্রেডিট
+# চ্যানেল ক্রেডিট
 channel_credit = "\n\nFollow me: @MiddleEastin"
 # ==========================================
 
@@ -81,7 +81,7 @@ async def handler(event):
         if message_unique_key in processed_ids:
             return
         
-        # মেমরি লিমিটেডের মধ্যে রাখতে সেট সাইজ নিয়ন্ত্রণ (সর্বোচ্চ ২০০০টি আইডি)
+        # মেমরি লিমিটেডের মধ্যে রাখতে সেট সাইজ নিয়ন্ত্রণ
         if len(processed_ids) > 2000:
             processed_ids.clear()
             
@@ -90,24 +90,24 @@ async def handler(event):
         if event.raw_text:
             text = event.raw_text
             
-            # ১. সমস্ত লিংক, চ্যানেলের ইউজারনেম (@username) এবং সোর্স/ক্রেডিট মুছে ফেলা
+            # ১. সমস্ত লিংক, চ্যানেলের ইউজারনেম এবং সোর্স/ক্রেডিট মুছে ফেলা
             clean_text = re.sub(
                 r'http\S+|www\S+|@\w+|t\.me\/\S+|Source:.*|Via:.*|Credit:.*|频道:.*|Telegram:.*', 
                 '', 
                 text, 
                 flags=re.IGNORECASE
-            ).strip()[:850] # ক্যাপশন লিমিট ঠিক রাখতে ৯০০ এর নিচে রাখা হলো
+            ).strip()[:850]
             
             if not clean_text and not event.media:
                 return
 
-            # ২. নিউজের সাথে প্রাসঙ্গিক হ্যাশট্যাগ জেনারেট করা
+            # ২. ডায়নামিক হ্যাশট্যাগ জেনারেট করা
             dynamic_hashtags = generate_hashtags(clean_text)
 
-            # ৩. টেক্সট, হ্যাশট্যাগ এবং আপনার আগের চ্যানেল ক্রেডিট একসাথে সাজানো
+            # ৩. ফাইনাল ক্যাপশন তৈরি
             final_caption = clean_text + "\n" + dynamic_hashtags + channel_credit if clean_text else channel_credit.strip()
             
-            # ৪. মিডিয়া থাকলে ক্যাপশনসহ এবং না থাকলে শুধু টেক্সট পাঠানো
+            # ৪. পোস্ট পাঠানো
             if event.media and not getattr(event.media, 'webpage', None):
                 await client.send_file(my_channel, event.media, caption=final_caption)
             else:
