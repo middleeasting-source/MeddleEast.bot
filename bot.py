@@ -151,7 +151,7 @@ def clean_text(text):
     for line in text.splitlines():
         line = line.strip()
 
-        # Remove promotional lines, not news content.
+        # Remove promotional/follow lines.
         if re.match(
             r"^\s*(follow|join|subscribe)\s*:",
             line,
@@ -173,9 +173,20 @@ def clean_text(text):
         ):
             continue
 
+        # সোর্স চ্যানেলের ইউজারনেম বা লিংক জাতীয় ক্রেডিট লাইন মুছে ফেলার জন্য
+        if re.search(r"@[a-zA-Z0-9_]+", line) or re.search(r"t\.me/", line, re.I):
+            # যদি লাইনে শুধু সোর্স ট্যাগ বা লিংক থাকে তবে তা বাদ দিন
+            if re.match(r"^[\W\w]*(?:@|t\.me/)", line):
+                # পুরো লাইনটি যদি একটি ক্রেডিট বা সোর্স ট্যাগ হয় তবে স্কিপ করুন
+                continue
+
         cleaned_lines.append(line)
 
     result = "\n".join(cleaned_lines)
+    
+    # মেসেজের ভেতরে থাকা @username বা সোর্স ট্যাগগুলো পরিষ্কার করা
+    result = re.sub(r"(?:via|source|সূত্র|উৎস)?\s*[:\-]?\s*@[a-zA-Z0-9_]+", "", result, flags=re.I)
+    
     result = re.sub(r"[ \t]+\n", "\n", result)
     result = re.sub(r"\n{3,}", "\n\n", result)
 
@@ -272,7 +283,6 @@ async def forward_news(event, destination, footer):
             )
             return
 
-        # এখানে আগে সোর্স চ্যানেলের ইউজারনেম চেক করে 'Source:' যুক্ত করা হতো, যা এখন সম্পূর্ণ বাদ দেওয়া হয়েছে।
         caption = text + footer
 
         try:
@@ -384,4 +394,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
