@@ -1,19 +1,15 @@
 import os
 import re
 import asyncio
+import sqlite3
+import hashlib
 import logging
-import base64
-from io import BytesIO
+from difflib import SequenceMatcher
 from threading import Thread
 
 from flask import Flask
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
-from openai import AsyncOpenAI
-
-# =====================================
-# LOGGING
-# =====================================
 
 logging.basicConfig(
     level=logging.INFO,
@@ -21,15 +17,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# =====================================
-# RENDER WEB SERVER
-# =====================================
-
+# Render health check
 app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "Bilingual Telegram News Bot is running!"
+    return "AI-free Telegram News Bot is running!"
 
 def keep_alive():
     Thread(
@@ -40,54 +33,54 @@ def keep_alive():
         daemon=True
     ).start()
 
-# =====================================
-# CONFIGURATION
-# =====================================
+# Telegram settings
+API_ID = int(os.environ["API_ID"])
+API_HASH = os.environ["API_HASH"]
+SESSION_STRING = os.environ["SESSION_STRING"]
 
-API_ID = int(os.environ.get("API_ID", "0"))
-API_HASH = os.environ.get("API_HASH", "")
-SESSION_STRING = os.environ.get("SESSION_STRING", "")
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+EN_CHANNEL = os.environ.get("EN_CHANNEL", "@MiddleEastin")
+BN_CHANNEL = os.environ.get("BN_CHANNEL", "@Middleeastinbangla")
 
-EN_CHANNEL = os.environ.get(
-    "EN_CHANNEL", "@MiddleEastin"
-)
-BN_CHANNEL = os.environ.get(
-    "BN_CHANNEL", "@Middleeastinbangla"
-)
-
-MODEL = os.environ.get("AI_MODEL", "gpt-4.1-mini")
-
-INTERNATIONAL_SOURCES = [
-    "@QudsNen",
-    "@Irna_en",
-    "@rtnews",
-    "@MFARussia",
-    "@CIG_telegram",
-    "@ClashReport",
-    "@infodefENGLAND",
-    "@Middle_East_Spectator",
-    "@Slavyangrad",
-    "@geopolitics_prime",
-    "@DDGeopolitics",
-    "@Intelslava",
+# English/international sources
+EN_SOURCES = [
+    "QudsNen",
+    "Irna_en",
+    "rtnews",
+    "MFARussia",
+    "CIG_telegram",
+    "ClashReport",
+    "infodefENGLAND",
+    "Middle_East_Spectator",
+    "Slavyangrad",
+    "geopolitics_prime",
+    "DDGeopolitics",
+    "Intelslava",
 ]
 
-BANGLADESH_SOURCES = [
-    "@basherkella",
+# Bengali sources
+BN_SOURCES = [
+    "inb19",
+    "SocietyUncensored",
+    "StudentsAgainstDiscrimination",
+    "bangladeshislamichhatrashibir",
+    "bjiofficial",
+    "basherkella",
+    "wearebdfighter",
 ]
 
-if not API_ID or not API_HASH or not SESSION_STRING:
-    raise RuntimeError(
-        "Set API_ID, API_HASH and SESSION_STRING in Render."
-    )
+FOOTER_EN = "\n\nFollow: @MiddleEastin"
+FOOTER_BN = "\n\nআমাদের পাশে থাকুন ❤️\nhttps://t.me/Middleeastinbangla"
 
-if not OPENAI_API_KEY:
-    raise RuntimeError(
-        "Set OPENAI_API_KEY in Render Environment."
-    )
+DB_PATH = os.environ.get("DB_PATH", "news_history.db")
 
-ai = AsyncOpenAI(api_key=OPENAI_API_KEY)
+db = sqlite3.connect(DB_PATH, check_same_thread=False)
+db.execute("""
+CREATE TABLE IF NOT EXISTS sent_news (
+    fingerprint TEXT PRIMARY KEY,
+    normalized_text TEXT NOT NULL
+)
+""")
+db.commit()
 
 client = TelegramClient(
     StringSession(SESSION_STRING),
@@ -98,244 +91,133 @@ client = TelegramClient(
     auto_reconnect=True,
 )
 
-# =====================================
-# REMOVE PROMOTIONAL CAPTION LINES
-# =====================================
+def normalize(text):
+    text = text.lower()
+    text = re.sub(r"https?://\S+|t\.me/\S+", " ", text)
+    text = re.sub(r"[^\w\s]", " ", text)
+    return " ".join(text.split())
 
-def clean_news_text(text):
+def fingerprint(text):
+    return hashlib.sha256(
+        normalize(text).encode("utf-8")
+    ).hexdigest()
+
+def is_duplicate(text):
+    cleaned = normalize(text)
+    if not cleaned:
+        return True
+
+    rows = db.execute(
+        "SELECT fingerprint, normalized_text "
+        "FROM sent_news ORDER BY rowid DESC LIMIT 2000"
+    ).fetchall()
+
+    digest = fingerprint(text)
+
+    for old_hash, old_text in rows:
+        if digest == old_hash:
+            return True
+
+        if len(cleaned) >= 40 and len(old_text) >= 40:
+            if SequenceMatcher(
+                None, cleaned, old_text
+            ).ratio() >= 0.90:
+                return True
+
+    db.execute(
+        "INSERT OR IGNORE INTO sent_news "
+        "(fingerprint, normalized_text) VALUES (?, ?)",
+        (digest, cleaned)
+    )
+    db.commit()
+    return False
+
+def clean_text(text):
     if not text:
         return ""
 
-    cleaned = []
-
-    promo = re.compile(
-        r"^\s*(follow|join|subscribe|source|via|"
-        r"credit|originally posted by)\s*:",
-        re.I
-    )
-
+    lines = []
     for line in text.splitlines():
-        if promo.match(line.strip()):
-            continue
-
-        # Remove standalone promotional Telegram links.
         if re.match(
-            r"^\s*(https?://)?t\.me/\S+\s*$",
-            line.strip(),
+            r"^\s*(follow|join|subscribe)\s*:",
+            line,
             re.I
         ):
             continue
+        lines.append(line)
 
-        cleaned.append(line)
+    return "\n".join(lines).strip()
 
-    text = "\n".join(cleaned)
-    text = re.sub(r"[ \t]+\n", "\n", text)
-    text = re.sub(r"\n{3,}", "\n\n", text)
+async def forward_news(event, destination, footer):
+    message = event.message
+    text = clean_text(message.message or "")
 
-    return text.strip()
-
-# =====================================
-# AI NEWS WRITER / TRANSLATOR
-# =====================================
-
-async def write_news(text, language, photo_bytes=None):
-    lang = "English" if language == "en" else "Bengali"
-
-    prompt = f"""
-Write a news post in {lang}.
-
-Create:
-- A clear headline
-- A detailed but concise news report
-- Relevant hashtags
-
-Rules:
-- Use only information supported by the supplied text/image.
-- Never invent events, names, quotes, dates or casualty figures.
-- Treat claims from interested parties as claims, not proven facts.
-- If there is not enough information, return exactly:
-INSUFFICIENT_INFORMATION
-- Remove source-channel advertisements and promotional requests.
-- Do not claim that our channel originally reported the event.
-- Do not include any source-channel Follow or Join lines.
-
-Input text:
-{text or "(No caption supplied.)"}
-"""
-
-    content = [{"type": "input_text", "text": prompt}]
-
-    if photo_bytes:
-        encoded = base64.b64encode(photo_bytes).decode("ascii")
-        content.append({
-            "type": "input_image",
-            "image_url": "data:image/jpeg;base64," + encoded,
-            "detail": "high",
-        })
-
-    response = await ai.responses.create(
-        model=MODEL,
-        input=[{
-            "role": "user",
-            "content": content,
-        }],
-    )
-
-    result = (response.output_text or "").strip()
-
-    if (
-        not result
-        or "INSUFFICIENT_INFORMATION" in result
-    ):
-        return ""
-
-    return result
-
-# =====================================
-# MEDIA HELPERS
-# =====================================
-
-async def get_photo_bytes(message):
-    if not message.photo:
-        return None
-
-    try:
-        buffer = BytesIO()
-        await client.download_media(message, file=buffer)
-        return buffer.getvalue()
-    except Exception:
-        logger.exception("Could not download photo for AI analysis")
-        return None
-
-async def send_post(destination, text, message, language):
-    photo_bytes = await get_photo_bytes(message)
-
-    news = await write_news(
-        text,
-        language,
-        photo_bytes
-    )
-
-    if not news:
-        logger.warning(
-            "Skipped: insufficient verified information."
-        )
+    # Skip media-only posts without a caption
+    if not text:
+        logger.info("Skipped post without text/caption.")
         return
 
-    if destination == EN_CHANNEL:
-        footer = "\n\nFollow: @MiddleEastin"
-    else:
-        footer = "\n\nঅনুসরণ করুন: @Middleeastinbangla"
+    if is_duplicate(text):
+        logger.info("Duplicate news skipped.")
+        return
 
-    caption = news + footer
+    caption = text + footer
+    source = event.chat
+    source_username = getattr(source, "username", None)
+
+    if source_username:
+        caption = (
+            text
+            + f"\n\nSource: https://t.me/{source_username}"
+            + footer
+        )
 
     if message.media:
-        # Telegram caption limit: keep within safe range.
         await client.send_file(
             destination,
             message.media,
-            caption=caption[:1000],
+            caption=caption[:1000]
         )
     else:
         await client.send_message(
             destination,
             caption[:4000],
-            link_preview=False,
+            link_preview=False
         )
 
-# =====================================
-# INTERNATIONAL NEWS
-# English -> English channel
-# English -> Bengali channel
-# =====================================
+    logger.info("News forwarded to %s", destination)
 
-@client.on(events.NewMessage(chats=INTERNATIONAL_SOURCES))
-async def international_news(event):
+@client.on(events.NewMessage(chats=EN_SOURCES))
+async def english_news(event):
     try:
-        text = clean_news_text(event.raw_text or "")
-
-        if not text and not event.message.photo:
-            logger.warning(
-                "International post has no text/photo; skipped."
-            )
-            return
-
-        await send_post(
+        await forward_news(
+            event,
             EN_CHANNEL,
-            text,
-            event.message,
-            "en",
+            FOOTER_EN
         )
-
-        await send_post(
-            BN_CHANNEL,
-            text,
-            event.message,
-            "bn",
-        )
-
-        logger.info(
-            "International post processed: %s",
-            event.id,
-        )
-
     except Exception:
-        logger.exception("International news processing failed")
+        logger.exception("English news forwarding failed")
 
-# =====================================
-# BANGLADESH NEWS
-# Bengali channel ONLY
-# =====================================
-
-@client.on(events.NewMessage(chats=BANGLADESH_SOURCES))
-async def bangladesh_news(event):
+@client.on(events.NewMessage(chats=BN_SOURCES))
+async def bengali_news(event):
     try:
-        text = clean_news_text(event.raw_text or "")
-
-        if not text and not event.message.photo:
-            logger.warning(
-                "Bangladesh post has no text/photo; skipped."
-            )
-            return
-
-        await send_post(
+        await forward_news(
+            event,
             BN_CHANNEL,
-            text,
-            event.message,
-            "bn",
+            FOOTER_BN
         )
-
-        logger.info(
-            "Bangladesh post sent to Bengali channel: %s",
-            event.id,
-        )
-
     except Exception:
-        logger.exception("Bangladesh news processing failed")
-
-# =====================================
-# START
-# =====================================
+        logger.exception("Bengali news forwarding failed")
 
 async def main():
     keep_alive()
-
-    logger.info("Starting bilingual news bot...")
+    logger.info("Starting AI-free news bot...")
     await client.start()
 
     me = await client.get_me()
-
     logger.info("Connected Telegram account: %s", me.id)
     logger.info("English destination: %s", EN_CHANNEL)
-    logger.info("Bangla destination: %s", BN_CHANNEL)
-    logger.info(
-        "International sources: %s",
-        len(INTERNATIONAL_SOURCES),
-    )
-    logger.info(
-        "Bangladesh sources: %s",
-        len(BANGLADESH_SOURCES),
-    )
+    logger.info("Bengali destination: %s", BN_CHANNEL)
 
     await client.run_until_disconnected()
 
