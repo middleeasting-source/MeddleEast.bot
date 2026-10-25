@@ -272,7 +272,7 @@ async def forward_news(event, destination, footer):
             )
             return
 
-        # 소스 채널 크레딧(출처 추가 로직)을 제거함으로 오직 본인 푸터만 추가됩니다.
+        # এখানে আগে সোর্স চ্যানেলের ইউজারনেম চেক করে 'Source:' যুক্ত করা হতো, যা এখন সম্পূর্ণ বাদ দেওয়া হয়েছে।
         caption = text + footer
 
         try:
@@ -384,3 +384,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
